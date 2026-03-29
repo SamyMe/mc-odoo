@@ -31,23 +31,39 @@ async def proxy(request: Request, path: str):
     body = await request.body()
     headers = {
         k: v for k, v in request.headers.items()
-        if k.lower() not in ("host", "content-length")
+        if k.lower() not in ("host", "content-length", "transfer-encoding")
     }
 
-    # Use a long timeout — MCP tool calls can take time
-    async with httpx.AsyncClient(timeout=300.0) as client:
-        backend_response = await client.request(
-            method=request.method,
-            url=f"{MCP_BACKEND}/{path}",
-            headers=headers,
-            content=body,
-            params=dict(request.query_params),
-        )
+    # Use a long-lived client for streaming — MCP tool calls can take time
+    client = httpx.AsyncClient(timeout=300.0)
 
-    # Stream the response back — critical for MCP SSE / chunked payloads
+    backend_req = client.stream(
+        method=request.method,
+        url=f"{MCP_BACKEND}/{path}",
+        headers=headers,
+        content=body,
+        params=dict(request.query_params),
+    )
+
+    resp = await backend_req.__aenter__()
+
+    # Filter hop-by-hop headers from the backend response
+    fwd_headers = {
+        k: v for k, v in resp.headers.multi_items()
+        if k.lower() not in ("transfer-encoding", "content-length", "connection")
+    }
+
+    async def stream_body():
+        try:
+            async for chunk in resp.aiter_bytes():
+                yield chunk
+        finally:
+            await resp.aclose()
+            await client.aclose()
+
     return StreamingResponse(
-        content=iter([backend_response.content]),
-        status_code=backend_response.status_code,
-        headers=dict(backend_response.headers),
-        media_type=backend_response.headers.get("content-type"),
+        content=stream_body(),
+        status_code=resp.status_code,
+        headers=dict(fwd_headers),
+        media_type=resp.headers.get("content-type"),
     )
