@@ -262,9 +262,8 @@ Once deployed, the human adds this to their Claude config:
 
 **Claude Code (CLI)**:
 ```bash
-claude mcp add odoo \
-  --transport http \
-  --url https://<your-app>.up.railway.app/mcp/ \
+claude mcp add --transport http odoo \
+  https://<your-app>.up.railway.app/mcp/ \
   --header "Authorization: Bearer <BEARER_TOKEN>"
 ```
 
