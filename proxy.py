@@ -74,6 +74,29 @@ async def oauth_token(
     })
 
 
+@app.post("/debug/proxy")
+async def debug_proxy(request: Request):
+    """Non-streaming debug endpoint — forwards to MCP backend and returns full response."""
+    body = await request.body()
+    headers = {
+        k: v for k, v in request.headers.items()
+        if k.lower() not in ("host", "content-length", "transfer-encoding", "authorization")
+    }
+    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+        resp = await client.post(
+            f"{MCP_BACKEND}/mcp",
+            headers=headers,
+            content=body,
+        )
+    logger.info(f"Debug proxy: status={resp.status_code} len={len(resp.content)} content-type={resp.headers.get('content-type')}")
+    logger.info(f"Debug proxy body: {resp.text[:500]}")
+    return Response(
+        content=resp.content,
+        status_code=resp.status_code,
+        media_type=resp.headers.get("content-type"),
+    )
+
+
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def proxy(request: Request, path: str):
     # Enforce auth on all non-health routes
@@ -120,7 +143,7 @@ async def proxy(request: Request, path: str):
         async def stream_body():
             try:
                 chunk_count = 0
-                async for chunk in resp.aiter_raw():
+                async for chunk in resp.aiter_bytes():
                     chunk_count += 1
                     if chunk_count <= 3:
                         logger.info(f"Chunk #{chunk_count} ({len(chunk)} bytes)")
