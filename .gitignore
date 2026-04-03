@@ -1,4 +1,7 @@
 .env
 __pycache__/
 *.pyc
+*.swp
 .DS_Store
+key
+PROXY_EXPORT.md

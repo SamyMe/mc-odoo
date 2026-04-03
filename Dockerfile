@@ -17,5 +17,4 @@ COPY proxy.py .
 COPY start.sh .
 RUN chmod +x start.sh
 
-# Railway injects $PORT at runtime — do not hardcode it
 CMD ["./start.sh"]
