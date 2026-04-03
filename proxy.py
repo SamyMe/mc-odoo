@@ -5,7 +5,7 @@ import time
 import logging
 import httpx
 from fastapi import FastAPI, Request, Response, Form
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import JSONResponse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("proxy")
@@ -74,29 +74,6 @@ async def oauth_token(
     })
 
 
-@app.post("/debug/proxy")
-async def debug_proxy(request: Request):
-    """Non-streaming debug endpoint — forwards to MCP backend and returns full response."""
-    body = await request.body()
-    headers = {
-        k: v for k, v in request.headers.items()
-        if k.lower() not in ("host", "content-length", "transfer-encoding", "authorization")
-    }
-    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
-        resp = await client.post(
-            f"{MCP_BACKEND}/mcp",
-            headers=headers,
-            content=body,
-        )
-    logger.info(f"Debug proxy: status={resp.status_code} len={len(resp.content)} content-type={resp.headers.get('content-type')}")
-    logger.info(f"Debug proxy body: {resp.text[:500]}")
-    return Response(
-        content=resp.content,
-        status_code=resp.status_code,
-        media_type=resp.headers.get("content-type"),
-    )
-
-
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def proxy(request: Request, path: str):
     # Enforce auth on all non-health routes
@@ -118,55 +95,34 @@ async def proxy(request: Request, path: str):
     url = f"{MCP_BACKEND}/{path}"
     logger.info(f"Proxying {request.method} /{path} -> {url}")
 
-    # Use a long-lived client for streaming — MCP tool calls can take time
-    client = httpx.AsyncClient(timeout=300.0, follow_redirects=True)
+    async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
+        try:
+            resp = await client.request(
+                method=request.method,
+                url=url,
+                headers=headers,
+                content=body,
+                params=dict(request.query_params),
+            )
+        except Exception as e:
+            logger.error(f"Proxy error: {e}")
+            return Response(
+                content=f'{{"error":"proxy_error","detail":"{e}"}}',
+                status_code=502,
+                media_type="application/json",
+            )
 
-    try:
-        backend_req = client.stream(
-            method=request.method,
-            url=url,
-            headers=headers,
-            content=body,
-            params=dict(request.query_params),
-        )
+    logger.info(f"Backend: {resp.status_code} content-type={resp.headers.get('content-type')} len={len(resp.content)}")
 
-        resp = await backend_req.__aenter__()
+    # Forward response headers, filtering hop-by-hop
+    fwd_headers = {
+        k: v for k, v in resp.headers.multi_items()
+        if k.lower() not in ("transfer-encoding", "content-length", "connection")
+    }
 
-        logger.info(f"Backend responded: {resp.status_code} content-type={resp.headers.get('content-type')}")
-
-        # Filter hop-by-hop headers from the backend response
-        fwd_headers = {
-            k: v for k, v in resp.headers.multi_items()
-            if k.lower() not in ("transfer-encoding", "content-length", "connection")
-        }
-
-        async def stream_body():
-            try:
-                chunk_count = 0
-                async for chunk in resp.aiter_bytes():
-                    chunk_count += 1
-                    if chunk_count <= 3:
-                        logger.info(f"Chunk #{chunk_count} ({len(chunk)} bytes)")
-                    yield chunk
-                logger.info(f"Stream complete: {chunk_count} chunks total")
-            except Exception as e:
-                logger.error(f"Stream error: {e}")
-                raise
-            finally:
-                await resp.aclose()
-                await client.aclose()
-
-        return StreamingResponse(
-            content=stream_body(),
-            status_code=resp.status_code,
-            headers=dict(fwd_headers),
-            media_type=resp.headers.get("content-type"),
-        )
-    except Exception as e:
-        logger.error(f"Proxy error: {e}")
-        await client.aclose()
-        return Response(
-            content=f'{{"error":"proxy_error","detail":"{e}"}}',
-            status_code=502,
-            media_type="application/json",
-        )
+    return Response(
+        content=resp.content,
+        status_code=resp.status_code,
+        headers=dict(fwd_headers),
+        media_type=resp.headers.get("content-type"),
+    )
