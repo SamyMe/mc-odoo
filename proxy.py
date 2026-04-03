@@ -2,9 +2,13 @@ import os
 import hashlib
 import secrets
 import time
+import logging
 import httpx
 from fastapi import FastAPI, Request, Response, Form
 from fastapi.responses import StreamingResponse, JSONResponse
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("proxy")
 
 app = FastAPI(title="Odoo MCP Auth Proxy")
 
@@ -88,36 +92,58 @@ async def proxy(request: Request, path: str):
         if k.lower() not in ("host", "content-length", "transfer-encoding")
     }
 
+    url = f"{MCP_BACKEND}/{path}"
+    logger.info(f"Proxying {request.method} /{path} -> {url}")
+
     # Use a long-lived client for streaming — MCP tool calls can take time
-    client = httpx.AsyncClient(timeout=300.0)
+    client = httpx.AsyncClient(timeout=300.0, follow_redirects=True)
 
-    backend_req = client.stream(
-        method=request.method,
-        url=f"{MCP_BACKEND}/{path}",
-        headers=headers,
-        content=body,
-        params=dict(request.query_params),
-    )
+    try:
+        backend_req = client.stream(
+            method=request.method,
+            url=url,
+            headers=headers,
+            content=body,
+            params=dict(request.query_params),
+        )
 
-    resp = await backend_req.__aenter__()
+        resp = await backend_req.__aenter__()
 
-    # Filter hop-by-hop headers from the backend response
-    fwd_headers = {
-        k: v for k, v in resp.headers.multi_items()
-        if k.lower() not in ("transfer-encoding", "content-length", "connection")
-    }
+        logger.info(f"Backend responded: {resp.status_code} content-type={resp.headers.get('content-type')}")
 
-    async def stream_body():
-        try:
-            async for chunk in resp.aiter_bytes():
-                yield chunk
-        finally:
-            await resp.aclose()
-            await client.aclose()
+        # Filter hop-by-hop headers from the backend response
+        fwd_headers = {
+            k: v for k, v in resp.headers.multi_items()
+            if k.lower() not in ("transfer-encoding", "content-length", "connection")
+        }
 
-    return StreamingResponse(
-        content=stream_body(),
-        status_code=resp.status_code,
-        headers=dict(fwd_headers),
-        media_type=resp.headers.get("content-type"),
-    )
+        async def stream_body():
+            try:
+                chunk_count = 0
+                async for chunk in resp.aiter_raw():
+                    chunk_count += 1
+                    if chunk_count <= 3:
+                        logger.info(f"Chunk #{chunk_count} ({len(chunk)} bytes)")
+                    yield chunk
+                logger.info(f"Stream complete: {chunk_count} chunks total")
+            except Exception as e:
+                logger.error(f"Stream error: {e}")
+                raise
+            finally:
+                await resp.aclose()
+                await client.aclose()
+
+        return StreamingResponse(
+            content=stream_body(),
+            status_code=resp.status_code,
+            headers=dict(fwd_headers),
+            media_type=resp.headers.get("content-type"),
+        )
+    except Exception as e:
+        logger.error(f"Proxy error: {e}")
+        await client.aclose()
+        return Response(
+            content=f'{{"error":"proxy_error","detail":"{e}"}}',
+            status_code=502,
+            media_type="application/json",
+        )
