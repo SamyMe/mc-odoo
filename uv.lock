@@ -304,15 +304,11 @@ name = "mcp-odoo"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "mcp" },
     { name = "mcp-server-odoo" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "mcp", specifier = ">=1.26.0,<1.27.0" },
-    { name = "mcp-server-odoo" },
-]
+requires-dist = [{ name = "mcp-server-odoo" }]
 
 [[package]]
 name = "mcp-server-odoo"
