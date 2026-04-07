@@ -6,4 +6,4 @@ server = OdooMCPServer()
 mcp = server.app
 
 if __name__ == "__main__":
-    mcp.run(transport="http")
+    mcp.run(transport="streamable-http")
