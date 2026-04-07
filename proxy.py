@@ -221,6 +221,8 @@ async def proxy(request: Request, path: str):
         try:
             async for chunk in resp.aiter_bytes():
                 yield chunk
+        except httpx.ReadError:
+            logger.debug("Backend closed the stream (client likely disconnected)")
         finally:
             await resp.aclose()
             await client.aclose()
