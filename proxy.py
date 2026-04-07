@@ -217,9 +217,15 @@ async def proxy(request: Request, path: str):
         if k.lower() not in ("transfer-encoding", "content-length", "connection")
     }
 
+    # Prevent buffering by Cloudflare and other intermediate proxies
+    content_type = resp.headers.get("content-type", "")
+    if "text/event-stream" in content_type:
+        fwd_headers["X-Accel-Buffering"] = "no"
+        fwd_headers["Cache-Control"] = "no-cache, no-transform"
+
     async def stream_body():
         try:
-            async for chunk in resp.aiter_bytes():
+            async for chunk in resp.aiter_raw():
                 yield chunk
         except httpx.ReadError:
             logger.debug("Backend closed the stream (client likely disconnected)")
@@ -231,5 +237,5 @@ async def proxy(request: Request, path: str):
         content=stream_body(),
         status_code=resp.status_code,
         headers=dict(fwd_headers),
-        media_type=resp.headers.get("content-type"),
+        media_type=content_type or None,
     )
