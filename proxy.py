@@ -104,7 +104,7 @@ async def proxy(request: Request, path: str):
     logger.info(f"Proxying {request.method} /{path} -> {url}")
 
     # Use streaming so SSE / chunked MCP responses work correctly
-    client = httpx.AsyncClient(timeout=300.0)
+    client = httpx.AsyncClient(timeout=300.0, follow_redirects=True)
     try:
         backend_req = client.stream(
             method=request.method,
