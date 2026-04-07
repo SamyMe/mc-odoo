@@ -5,7 +5,7 @@ import time
 import logging
 import httpx
 from fastapi import FastAPI, Request, Response, Form
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("proxy")
@@ -89,30 +89,39 @@ async def proxy(request: Request, path: str):
     body = await request.body()
     headers = {
         k: v for k, v in request.headers.items()
-        if k.lower() not in ("host", "content-length", "transfer-encoding")
+        if k.lower() not in (
+            "host", "content-length", "transfer-encoding",
+            # Strip proxy/Cloudflare headers so the backend doesn't
+            # think it's behind HTTPS and issue bogus 307 redirects
+            "x-forwarded-proto", "x-forwarded-for", "x-forwarded-host",
+            "x-real-ip", "cf-connecting-ip", "cf-visitor", "cf-ray",
+            "cf-ipcountry", "cf-worker", "cdn-loop",
+            "true-client-ip",
+        )
     }
 
     url = f"{MCP_BACKEND}/{path}"
     logger.info(f"Proxying {request.method} /{path} -> {url}")
 
-    async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
-        try:
-            resp = await client.request(
-                method=request.method,
-                url=url,
-                headers=headers,
-                content=body,
-                params=dict(request.query_params),
-            )
-        except Exception as e:
-            logger.error(f"Proxy error: {e}")
-            return Response(
-                content=f'{{"error":"proxy_error","detail":"{e}"}}',
-                status_code=502,
-                media_type="application/json",
-            )
-
-    logger.info(f"Backend: {resp.status_code} content-type={resp.headers.get('content-type')} len={len(resp.content)}")
+    # Use streaming so SSE / chunked MCP responses work correctly
+    client = httpx.AsyncClient(timeout=300.0)
+    try:
+        backend_req = client.stream(
+            method=request.method,
+            url=url,
+            headers=headers,
+            content=body,
+            params=dict(request.query_params),
+        )
+        resp = await backend_req.__aenter__()
+    except Exception as e:
+        logger.error(f"Proxy error: {e}")
+        await client.aclose()
+        return Response(
+            content=f'{{"error":"proxy_error","detail":"{e}"}}',
+            status_code=502,
+            media_type="application/json",
+        )
 
     # Forward response headers, filtering hop-by-hop
     fwd_headers = {
@@ -120,8 +129,16 @@ async def proxy(request: Request, path: str):
         if k.lower() not in ("transfer-encoding", "content-length", "connection")
     }
 
-    return Response(
-        content=resp.content,
+    async def stream_body():
+        try:
+            async for chunk in resp.aiter_bytes():
+                yield chunk
+        finally:
+            await resp.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        content=stream_body(),
         status_code=resp.status_code,
         headers=dict(fwd_headers),
         media_type=resp.headers.get("content-type"),
