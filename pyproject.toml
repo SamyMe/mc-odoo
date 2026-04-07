@@ -1,0 +1,9 @@
+[project]
+name = "mcp-odoo"
+version = "0.1.0"
+description = "Odoo MCP Server for Claude — deployed on Alpic"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp-server-odoo",
+]
