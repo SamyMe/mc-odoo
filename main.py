@@ -100,7 +100,7 @@ async def create_record(model: str, values: str) -> str:
     """
     h = await _get_handler()
     vals = json.loads(values) if isinstance(values, str) else values
-    result = await h._handle_create_tool(model, vals, ctx=None)
+    result = await h._handle_create_record_tool(model, vals, ctx=None)
     return json.dumps(result, indent=2, default=str)
 
 
@@ -115,7 +115,7 @@ async def update_record(model: str, record_id: int, values: str) -> str:
     """
     h = await _get_handler()
     vals = json.loads(values) if isinstance(values, str) else values
-    result = await h._handle_update_tool(model, record_id, vals, ctx=None)
+    result = await h._handle_update_record_tool(model, record_id, vals, ctx=None)
     return json.dumps(result, indent=2, default=str)
 
 
@@ -128,7 +128,7 @@ async def delete_record(model: str, record_id: int) -> str:
         record_id: The ID of the record to delete
     """
     h = await _get_handler()
-    result = await h._handle_delete_tool(model, record_id, ctx=None)
+    result = await h._handle_delete_record_tool(model, record_id, ctx=None)
     return json.dumps(result, indent=2, default=str)
 
 
